@@ -1,0 +1,25 @@
+# Speech-to-Text Module - Phase 1.2
+# Voice-Based Threat & Emergency Detection System
+
+# Core Whisper engine (using faster-whisper for real-time performance)
+faster-whisper>=1.0.0
+
+# Audio processing
+numpy>=1.24.0
+soundfile>=0.12.0
+
+# For streaming audio handling
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+
+# Logging
+structlog>=23.0.0
+
+# Optional: Vosk as fallback lightweight engine
+vosk>=0.3.45
+
+# Integration with audio capture module
+sounddevice>=0.4.6
