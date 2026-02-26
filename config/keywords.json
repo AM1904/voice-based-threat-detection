@@ -1,0 +1,68 @@
+{
+  "version": "1.0",
+  "description": "WATZS threat keyword configuration. Keywords organized by alert level.",
+  "levels": {
+    "L1": {
+      "name": "Low Alert",
+      "description": "Single threat keyword detected",
+      "keywords": [
+        "fire extinguisher",
+        "don't move",
+        "gun",
+        "robbery",
+        "code red",
+        "hands up",
+        "save me"
+      ]
+    },
+    "L2": {
+      "name": "Medium Alert",
+      "description": "Suspicious activity keywords or abnormal sound",
+      "keywords": [
+        "help",
+        "blue file",
+        "more water",
+        "register",
+        "stockroom",
+        "locker",
+        "terminate",
+        "clear up"
+      ]
+    },
+    "L3": {
+      "name": "High Alert",
+      "description": "Direct threat or emergency phrases",
+      "keywords": [
+        "i will shoot",
+        "get on the floor",
+        "don't call the police",
+        "i will kill you",
+        "where is the locker",
+        "where is the money"
+      ]
+    }
+  },
+  "escalation_rules": {
+    "keyword_repetition_to_L3": {
+      "description": "Any L1 or L2 keyword repeated more than 2 times escalates to L3",
+      "threshold": 2
+    },
+    "any_word_repetition_to_L2": {
+      "description": "Any word (not just keywords) repeated 3 or more times triggers L2 alert",
+      "threshold": 3
+    },
+    "combined_L1_L2_to_L3": {
+      "description": "L1 + L2 alert occurring within time window escalates to L3",
+      "time_window_seconds": 30
+    },
+    "secret_code_to_L3": {
+      "description": "Secret voice code spoken 3 times in succession triggers L3",
+      "repetitions": 3
+    }
+  },
+  "secret_code": {
+    "phrase": "watzs emergency",
+    "required_repetitions": 3,
+    "time_window_seconds": 60
+  }
+}

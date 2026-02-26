@@ -1,0 +1,28 @@
+# WATZS - Core Dependencies
+
+# Audio Engine — STT (Ananya)
+transformers>=4.36.0
+torch>=2.1.0
+accelerate>=0.25.0
+pyaudio>=0.2.14
+sounddevice>=0.4.6
+numpy>=1.24.0
+
+# Sound Classification (YAMNet)
+tensorflow>=2.13.0
+tensorflow-hub>=0.14.0
+
+# STT Training Pipeline
+datasets>=2.16.0
+evaluate>=0.4.0
+jiwer>=3.0.0
+audiomentations>=0.34.0
+pydub>=0.25.1
+librosa>=0.10.0
+soundfile>=0.12.0
+
+# Server (Guru) - listed for completeness
+# flask>=3.0.0
+# flask-socketio>=5.3.0
+# flask-sqlalchemy>=3.1.0
+# python-socketio>=5.10.0
