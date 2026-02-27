@@ -1,11 +1,12 @@
 """
 Sound Classifier Module
 =======================
-Classifies audio for abnormal/threat sounds using YAMNet
-(a pre-trained TensorFlow model for 521 sound event classes).
+Classifies audio for abnormal/threat sounds using a custom-trained
+classifier built on top of YAMNet embeddings.
 
-Detects sounds like screams, gunshots, explosions, glass breaking,
-crashes, and other threat-related audio events.
+Pipeline: Raw Audio → YAMNet (embeddings) → Custom Dense Head → 5-class prediction
+
+Trained classes: scream, gunshot, glass_breaking, crash, normal
 
 Usage:
     from audio_engine.sound_classifier import SoundClassifier
@@ -26,72 +27,36 @@ import numpy as np
 from datetime import datetime, timezone, timedelta
 
 
-# ─── Threat Sound Categories ────────────────────────────────────────────
-# YAMNet class names that indicate potential threats
-THREAT_SOUNDS = {
-    # Weapons
-    "Gunshot, gunfire": "gunshot",
-    "Machine gun": "gunshot",
-    "Explosion": "explosion",
-    "Burst, pop": "explosion",
+# ─── Model Configuration ────────────────────────────────────────────────
+CLASSES = ["scream", "gunshot", "glass_breaking", "crash", "normal"]
+NUM_CLASSES = len(CLASSES)
+IDX_TO_CLASS = {i: c for i, c in enumerate(CLASSES)}
 
-    # Human distress
-    "Screaming": "scream",
-    "Scream": "scream",
-    "Crying, sobbing": "distress",
-    "Whimper": "distress",
-    "Shout": "shout",
-    "Yell": "shout",
+MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "models", "watzs_sound_classifier.h5"
+)
 
-    # Breaking / impacts
-    "Glass": "glass_breaking",
-    "Shatter": "glass_breaking",
-    "Breaking": "breaking",
-    "Crash": "crash",
-    "Smash, crash": "crash",
-    "Slam": "impact",
-    "Thump, thud": "impact",
-
-    # Alarms
-    "Alarm": "alarm",
-    "Siren": "siren",
-    "Fire alarm": "fire_alarm",
-    "Smoke detector, smoke alarm": "fire_alarm",
-
-    # Emergency
-    "Emergency vehicle": "emergency",
-    "Police car (siren)": "emergency",
-    "Ambulance (siren)": "emergency",
-    "Fire engine, fire truck (siren)": "emergency",
-}
-
-# Alert levels for sound categories
+# Alert levels for each class
 SOUND_ALERT_LEVELS = {
-    "gunshot": 3,
-    "explosion": 3,
-    "scream": 2,
-    "distress": 2,
-    "shout": 1,
-    "glass_breaking": 2,
-    "breaking": 2,
-    "crash": 2,
-    "impact": 1,
-    "alarm": 2,
-    "siren": 2,
-    "fire_alarm": 2,
-    "emergency": 2,
+    "scream":         2,   # L2
+    "gunshot":        2,   # L2
+    "glass_breaking": 2,   # L2
+    "crash":          2,   # L2
+    "normal":         0,   # No alarm
 }
 
-DEFAULT_CONFIDENCE_THRESHOLD = 0.5
-CONSECUTIVE_DETECTIONS_REQUIRED = 2  # To reduce false positives
+DEFAULT_CONFIDENCE_THRESHOLD = 0.70
+CONSECUTIVE_DETECTIONS_REQUIRED = 2  # Reduce false positives
 
 
 class SoundClassifier:
     """
-    Classifies audio chunks using YAMNet for threat sound detection.
+    Classifies audio chunks using YAMNet embeddings + a custom-trained
+    dense classifier head for threat sound detection.
 
-    Requires TensorFlow and tensorflow-hub. The YAMNet model is
-    downloaded automatically on first use.
+    The custom model was trained on ESC-50 + UrbanSound8K data,
+    detecting: scream, gunshot, glass_breaking, crash, normal.
 
     Attributes:
         confidence_threshold (float): Minimum confidence to trigger (0.0–1.0)
@@ -100,7 +65,8 @@ class SoundClassifier:
     """
 
     def __init__(self, confidence_threshold=DEFAULT_CONFIDENCE_THRESHOLD,
-                 consecutive_required=CONSECUTIVE_DETECTIONS_REQUIRED):
+                 consecutive_required=CONSECUTIVE_DETECTIONS_REQUIRED,
+                 model_path=None):
         self.confidence_threshold = confidence_threshold
         self.consecutive_required = consecutive_required
 
@@ -112,36 +78,38 @@ class SoundClassifier:
         self._is_active = True
         self._consecutive_detections = {}  # category → count
         self._last_detection_time = {}     # category → timestamp
-        self._model = None
-        self._class_names = None
+        self._yamnet = None
+        self._classifier = None
         self._model_loaded = False
+        self._model_path = model_path or MODEL_PATH
 
-        # Lazy-load model
+        # Lazy-load models
         self._load_model()
 
     def _load_model(self):
-        """Load YAMNet model from TensorFlow Hub."""
+        """Load YAMNet (for embeddings) + custom classifier head."""
         try:
             import tensorflow_hub as hub
             import tensorflow as tf
-            import csv
 
-            print("[SoundClassifier] Loading YAMNet model from TensorFlow Hub...")
+            # Load YAMNet for embedding extraction
+            print("[SoundClassifier] Loading YAMNet for embeddings...")
+            self._yamnet = hub.load("https://tfhub.dev/google/yamnet/1")
+            print("[SoundClassifier] ✅ YAMNet loaded.")
 
-            # Load the YAMNet model
-            self._model = hub.load("https://tfhub.dev/google/yamnet/1")
+            # Load custom trained classifier
+            resolved_path = os.path.abspath(self._model_path)
+            if not os.path.exists(resolved_path):
+                print(f"[SoundClassifier] WARNING: Model not found at {resolved_path}")
+                print("  Running in MOCK mode.")
+                self._model_loaded = False
+                return
 
-            # Load class names from the model's asset
-            class_map_path = self._model.class_map_path().numpy().decode("utf-8")
-            self._class_names = []
-            with open(class_map_path, "r") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    self._class_names.append(row["display_name"])
-
+            print(f"[SoundClassifier] Loading custom classifier from {resolved_path}...")
+            self._classifier = tf.keras.models.load_model(resolved_path)
             self._model_loaded = True
-            print(f"[SoundClassifier] YAMNet loaded — "
-                  f"{len(self._class_names)} sound classes available.")
+            print(f"[SoundClassifier] ✅ Custom model loaded — "
+                  f"{NUM_CLASSES} classes: {CLASSES}")
 
         except ImportError:
             print("[SoundClassifier] WARNING: TensorFlow not installed!")
@@ -150,7 +118,7 @@ class SoundClassifier:
             self._model_loaded = False
 
         except Exception as e:
-            print(f"[SoundClassifier] WARNING: Failed to load YAMNet: {e}")
+            print(f"[SoundClassifier] WARNING: Failed to load models: {e}")
             print("  Running in MOCK mode.")
             self._model_loaded = False
 
@@ -166,90 +134,106 @@ class SoundClassifier:
             data (bytes): Raw audio data (16-bit PCM, mono, 16kHz)
             frame_count (int): Number of frames (unused)
         """
-        if not self._is_active:
-            return
-
-        if not self._model_loaded:
+        if not self._is_active or not self._model_loaded:
             return
 
         try:
             import tensorflow as tf
 
-            # Convert to float32 waveform normalized to [-1, 1]
+            # Convert bytes to float32 waveform normalized to [-1, 1]
             samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
             waveform = samples / 32768.0
 
             # YAMNet expects at least 0.975s of audio at 16kHz
             min_samples = 15600  # ~0.975s at 16kHz
             if len(waveform) < min_samples:
-                # Pad with zeros if needed
                 waveform = np.pad(waveform, (0, min_samples - len(waveform)))
 
-            # Run YAMNet inference
-            scores, embeddings, spectrogram = self._model(waveform)
-            scores = scores.numpy()
+            # Extract YAMNet embeddings (1024-dim per time frame)
+            _, embeddings, _ = self._yamnet(waveform)
+            embedding = embeddings.numpy().mean(axis=0, keepdims=True)
 
-            # Get top predictions for each time frame
-            self._analyze_scores(scores)
+            # Run custom classifier on the embedding
+            prediction = self._classifier.predict(embedding, verbose=0)[0]
+
+            self._analyze_prediction(prediction)
 
         except Exception as e:
             print(f"[SoundClassifier] Classification error: {e}")
 
-    def _analyze_scores(self, scores):
-        """Analyze YAMNet scores for threat sounds."""
+    def process_audio_float(self, audio_float, frame_count=None):
+        """
+        Classify a float32 audio chunk (already normalized to [-1, 1]).
+
+        Use this when audio is captured as float32 (e.g., PyAudio paFloat32).
+
+        Args:
+            audio_float (np.ndarray): Float32 audio samples
+            frame_count (int): Number of frames (unused)
+        """
+        if not self._is_active or not self._model_loaded:
+            return
+
+        try:
+            waveform = np.array(audio_float, dtype=np.float32)
+
+            min_samples = 15600
+            if len(waveform) < min_samples:
+                waveform = np.pad(waveform, (0, min_samples - len(waveform)))
+
+            _, embeddings, _ = self._yamnet(waveform)
+            embedding = embeddings.numpy().mean(axis=0, keepdims=True)
+
+            prediction = self._classifier.predict(embedding, verbose=0)[0]
+            self._analyze_prediction(prediction)
+
+        except Exception as e:
+            print(f"[SoundClassifier] Classification error: {e}")
+
+    def _analyze_prediction(self, prediction):
+        """Analyze custom model prediction for threat sounds."""
         now = time.time()
 
-        # Average scores across time frames
-        mean_scores = np.mean(scores, axis=0)
+        idx = int(np.argmax(prediction))
+        confidence = float(prediction[idx])
+        label = IDX_TO_CLASS[idx]
 
-        # Find threat sounds above threshold
-        detections = []
-        for yamnet_class, category in THREAT_SOUNDS.items():
-            # Find the index for this class name
-            if yamnet_class in self._class_names:
-                idx = self._class_names.index(yamnet_class)
-                confidence = float(mean_scores[idx])
+        # Notify classification callback with all class scores
+        if self.on_classification:
+            results = [(CLASSES[i], float(prediction[i])) for i in range(NUM_CLASSES)]
+            results.sort(key=lambda x: x[1], reverse=True)
+            self.on_classification(results)
 
-                if confidence >= self.confidence_threshold:
-                    detections.append((category, yamnet_class, confidence))
+        # Ignore "normal" and low-confidence detections
+        if label == "normal" or confidence < self.confidence_threshold:
+            return
 
-        # Notify classification callback with top results
-        if self.on_classification and len(mean_scores) > 0:
-            top_indices = np.argsort(mean_scores)[-5:][::-1]
-            top_results = [
-                (self._class_names[i], float(mean_scores[i]))
-                for i in top_indices
-            ]
-            self.on_classification(top_results)
-
-        # Process threat detections
-        for category, class_name, confidence in detections:
-            # Track consecutive detections
-            if category in self._last_detection_time:
-                time_gap = now - self._last_detection_time[category]
-                if time_gap < 2.0:  # Within 2 seconds
-                    self._consecutive_detections[category] = \
-                        self._consecutive_detections.get(category, 0) + 1
-                else:
-                    self._consecutive_detections[category] = 1
+        # Track consecutive detections
+        if label in self._last_detection_time:
+            time_gap = now - self._last_detection_time[label]
+            if time_gap < 2.0:  # Within 2 seconds
+                self._consecutive_detections[label] = \
+                    self._consecutive_detections.get(label, 0) + 1
             else:
-                self._consecutive_detections[category] = 1
+                self._consecutive_detections[label] = 1
+        else:
+            self._consecutive_detections[label] = 1
 
-            self._last_detection_time[category] = now
-            consecutive = self._consecutive_detections[category]
+        self._last_detection_time[label] = now
+        consecutive = self._consecutive_detections[label]
 
-            # Only alert if we have enough consecutive detections
-            if consecutive >= self.consecutive_required:
-                level = SOUND_ALERT_LEVELS.get(category, 2)
-                self._emit_alert(
-                    category=category,
-                    class_name=class_name,
-                    level=level,
-                    confidence=confidence,
-                    consecutive=consecutive
-                )
-                # Reset to avoid spamming
-                self._consecutive_detections[category] = 0
+        # Only alert if we have enough consecutive detections
+        if consecutive >= self.consecutive_required:
+            level = SOUND_ALERT_LEVELS.get(label, 2)
+            self._emit_alert(
+                category=label,
+                class_name=label,
+                level=level,
+                confidence=confidence,
+                consecutive=consecutive
+            )
+            # Reset to avoid spamming
+            self._consecutive_detections[label] = 0
 
     def _emit_alert(self, category, class_name, level, confidence,
                     consecutive):
@@ -262,7 +246,7 @@ class SoundClassifier:
             "timestamp": datetime.now(timezone(timedelta(hours=5, minutes=30)))
                          .isoformat(),
             "confidence": confidence,
-            "source": "yamnet",
+            "source": "watzs_custom",
             "metadata": {
                 "sound_class": class_name,
                 "category": category,
@@ -330,7 +314,7 @@ class SoundClassifier:
     @staticmethod
     def get_threat_categories():
         """Get all trackable threat sound categories with alert levels."""
-        return dict(SOUND_ALERT_LEVELS)
+        return {k: v for k, v in SOUND_ALERT_LEVELS.items() if k != "normal"}
 
 
 # ─── CLI Entry Point ───────────────────────────────────────────────────
@@ -348,7 +332,7 @@ if __name__ == "__main__":
     classifier.on_alert = on_alert
 
     if not classifier.is_model_loaded:
-        print("\n⚠️  TensorFlow not available — running mock tests...\n")
+        print("\n⚠️  Models not available — running mock tests...\n")
         print("Simulating threat sounds:\n")
 
         for category in ["scream", "gunshot", "glass_breaking", "crash"]:
@@ -358,9 +342,11 @@ if __name__ == "__main__":
 
         print("✅ Mock tests complete.")
     else:
-        print("\n✅ YAMNet model loaded. Ready for live classification.")
+        print("\n✅ Custom model loaded. Ready for live classification.")
         print("   Run with AudioCapture for real-time detection.")
 
     print(f"\n📋 Supported threat categories:")
-    for cat, level in sorted(SOUND_ALERT_LEVELS.items(), key=lambda x: x[1]):
+    for cat, level in sorted(
+        SoundClassifier.get_threat_categories().items(), key=lambda x: x[1]
+    ):
         print(f"   L{level}: {cat}")
