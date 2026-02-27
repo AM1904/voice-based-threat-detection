@@ -21,8 +21,8 @@ pydub>=0.25.1
 librosa>=0.10.0
 soundfile>=0.12.0
 
-# Server (Guru) - listed for completeness
-# flask>=3.0.0
-# flask-socketio>=5.3.0
-# flask-sqlalchemy>=3.1.0
-# python-socketio>=5.10.0
+# Server (Guru)
+flask>=3.0.0
+flask-socketio>=5.3.0
+flask-sqlalchemy>=3.1.0
+python-socketio>=5.10.0

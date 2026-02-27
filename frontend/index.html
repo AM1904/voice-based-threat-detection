@@ -1,14 +1,520 @@
-<!-- WATZS Dashboard - Guru's module -->
-<!-- To be implemented in Phase 2-3 -->
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WATZS Dashboard</title>
+    <title>WATZS — Threat Detection Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #0f1117;
+            color: #e1e4e8;
+            min-height: 100vh;
+        }
+
+        /* ─── Header ─────────────────────────────────────── */
+        .header {
+            background: linear-gradient(135deg, #161b22 0%, #1c2333 100%);
+            border-bottom: 1px solid #30363d;
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            color: #f0f3f6;
+        }
+
+        .header h1 span {
+            color: #58a6ff;
+        }
+
+        .connection-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            background: #21262d;
+            border: 1px solid #30363d;
+        }
+
+        .connection-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #f85149;
+            transition: background 0.3s;
+        }
+
+        .connection-dot.connected {
+            background: #3fb950;
+        }
+
+        /* ─── Main Layout ────────────────────────────────── */
+        .dashboard {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        /* ─── Alarm Level Banner ─────────────────────────── */
+        .alarm-banner {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            text-align: center;
+            transition: all 0.4s ease;
+        }
+
+        .alarm-banner.level-0 {
+            border-color: #3fb950;
+        }
+
+        .alarm-banner.level-1 {
+            border-color: #d29922;
+            background: #1c1a10;
+        }
+
+        .alarm-banner.level-2 {
+            border-color: #db6d28;
+            background: #1c1510;
+        }
+
+        .alarm-banner.level-3 {
+            border-color: #f85149;
+            background: #1c1012;
+            animation: pulse-red 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse-red {
+
+            0%,
+            100% {
+                box-shadow: 0 0 0 0 rgba(248, 81, 73, 0.2);
+            }
+
+            50% {
+                box-shadow: 0 0 20px 4px rgba(248, 81, 73, 0.3);
+            }
+        }
+
+        .alarm-icon {
+            font-size: 48px;
+            margin-bottom: 8px;
+        }
+
+        .alarm-label {
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #8b949e;
+            margin-bottom: 4px;
+        }
+
+        .alarm-status {
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .alarm-banner.level-0 .alarm-status {
+            color: #3fb950;
+        }
+
+        .alarm-banner.level-1 .alarm-status {
+            color: #d29922;
+        }
+
+        .alarm-banner.level-2 .alarm-status {
+            color: #db6d28;
+        }
+
+        .alarm-banner.level-3 .alarm-status {
+            color: #f85149;
+        }
+
+        /* ─── Stats Row ──────────────────────────────────── */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #f0f3f6;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 4px;
+        }
+
+        /* ─── Event Log ──────────────────────────────────── */
+        .event-log {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .event-log-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid #30363d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .event-log-header h2 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .clear-btn {
+            background: #21262d;
+            color: #8b949e;
+            border: 1px solid #30363d;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .clear-btn:hover {
+            background: #30363d;
+            color: #f0f3f6;
+        }
+
+        .events-list {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .event-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 20px;
+            border-bottom: 1px solid #21262d;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .event-level {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .event-level.l1 {
+            background: rgba(210, 153, 34, 0.15);
+        }
+
+        .event-level.l2 {
+            background: rgba(219, 109, 40, 0.15);
+        }
+
+        .event-level.l3 {
+            background: rgba(248, 81, 73, 0.15);
+        }
+
+        .event-details {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .event-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #f0f3f6;
+        }
+
+        .event-meta {
+            font-size: 12px;
+            color: #8b949e;
+            margin-top: 2px;
+        }
+
+        .event-confidence {
+            font-size: 13px;
+            font-weight: 500;
+            color: #8b949e;
+            flex-shrink: 0;
+        }
+
+        .event-time {
+            font-size: 12px;
+            color: #484f58;
+            flex-shrink: 0;
+            min-width: 65px;
+            text-align: right;
+        }
+
+        .empty-state {
+            padding: 48px 20px;
+            text-align: center;
+            color: #484f58;
+        }
+
+        .empty-state .icon {
+            font-size: 32px;
+            margin-bottom: 8px;
+        }
+    </style>
 </head>
+
 <body>
-    <h1>WATZS — Threat Detection Dashboard</h1>
-    <p>Dashboard UI coming in Phase 2-3 (Guru)</p>
+
+    <!-- Header -->
+    <div class="header">
+        <h1><span>WATZS</span> Threat Detection</h1>
+        <div class="connection-badge">
+            <div class="connection-dot" id="connection-dot"></div>
+            <span id="connection-text">Connecting...</span>
+        </div>
+    </div>
+
+    <div class="dashboard">
+
+        <!-- Alarm Level Banner -->
+        <div class="alarm-banner level-0" id="alarm-banner">
+            <div class="alarm-icon" id="alarm-icon">🟢</div>
+            <div class="alarm-label">Current Status</div>
+            <div class="alarm-status" id="alarm-status">All Clear — Monitoring</div>
+        </div>
+
+        <!-- Stats Row -->
+        <div class="stats-row">
+            <div class="stat-card">
+                <div class="stat-value" id="stat-total">0</div>
+                <div class="stat-label">Total Events</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-l1">0</div>
+                <div class="stat-label">🟡 Level 1</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-l2">0</div>
+                <div class="stat-label">🟠 Level 2</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-l3">0</div>
+                <div class="stat-label">🔴 Level 3</div>
+            </div>
+        </div>
+
+        <!-- Event Log -->
+        <div class="event-log">
+            <div class="event-log-header">
+                <h2>📋 Live Event Log</h2>
+                <button class="clear-btn" id="clear-btn" onclick="clearEvents()">Clear All</button>
+            </div>
+            <div class="events-list" id="events-list">
+                <div class="empty-state" id="empty-state">
+                    <div class="icon">🎧</div>
+                    <div>Waiting for events...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ─── State ───────────────────────────────────────────────────
+        let stats = { total: 0, l1: 0, l2: 0, l3: 0 };
+        let currentMaxLevel = 0;
+
+        // ─── SocketIO Connection ─────────────────────────────────────
+        const socket = io();
+        const dot = document.getElementById('connection-dot');
+        const connText = document.getElementById('connection-text');
+
+        socket.on('connect', () => {
+            dot.classList.add('connected');
+            connText.textContent = 'Connected';
+            loadExistingEvents();
+        });
+
+        socket.on('disconnect', () => {
+            dot.classList.remove('connected');
+            connText.textContent = 'Disconnected';
+        });
+
+        // ─── Listen for Live Alerts ──────────────────────────────────
+        socket.on('alert_event', (data) => {
+            addEventToLog(data);
+            updateStats(data.level);
+            updateAlarmBanner(data.level);
+        });
+
+        // ─── Load Existing Events on Connect ─────────────────────────
+        async function loadExistingEvents() {
+            try {
+                const resp = await fetch('/events?limit=50');
+                const events = await resp.json();
+                // Events come newest-first, reverse to add oldest first
+                events.reverse().forEach(evt => {
+                    addEventToLog(evt, false);
+                    updateStats(evt.level);
+                });
+                // Set alarm to highest level seen
+                if (events.length > 0) {
+                    const maxLevel = Math.max(...events.map(e => e.level));
+                    updateAlarmBanner(maxLevel);
+                }
+            } catch (e) {
+                console.error('Failed to load events:', e);
+            }
+        }
+
+        // ─── Add Event to UI ─────────────────────────────────────────
+        function addEventToLog(data, animate = true) {
+            const emptyState = document.getElementById('empty-state');
+            if (emptyState) emptyState.remove();
+
+            const list = document.getElementById('events-list');
+            const item = document.createElement('div');
+            item.className = 'event-item';
+            if (!animate) item.style.animation = 'none';
+
+            const levelIcons = { 1: '🟡', 2: '🟠', 3: '🔴' };
+            const levelNames = { 1: 'LOW', 2: 'MEDIUM', 3: 'HIGH' };
+            const typeLabels = {
+                keyword: '🗣️ Keyword',
+                sound: '🔊 Sound',
+                voice_code: '🔑 Voice Code',
+                repetition: '🔁 Repetition'
+            };
+
+            const level = data.level || 1;
+            const confidence = data.confidence
+                ? `${Math.round(data.confidence * 100)}%`
+                : '—';
+            const time = data.timestamp
+                ? new Date(data.timestamp).toLocaleTimeString('en-IN', { hour12: false })
+                : '—';
+
+            item.innerHTML = `
+                <div class="event-level l${level}">${levelIcons[level] || '⚪'}</div>
+                <div class="event-details">
+                    <div class="event-title">${escapeHtml(data.keyword || 'Unknown')}</div>
+                    <div class="event-meta">${typeLabels[data.type] || data.type} · L${level} ${levelNames[level] || ''}</div>
+                </div>
+                <div class="event-confidence">${confidence}</div>
+                <div class="event-time">${time}</div>
+            `;
+
+            list.prepend(item);
+        }
+
+        // ─── Update Stats ────────────────────────────────────────────
+        function updateStats(level) {
+            stats.total++;
+            if (level === 1) stats.l1++;
+            if (level === 2) stats.l2++;
+            if (level === 3) stats.l3++;
+
+            document.getElementById('stat-total').textContent = stats.total;
+            document.getElementById('stat-l1').textContent = stats.l1;
+            document.getElementById('stat-l2').textContent = stats.l2;
+            document.getElementById('stat-l3').textContent = stats.l3;
+        }
+
+        // ─── Update Alarm Banner ─────────────────────────────────────
+        function updateAlarmBanner(level) {
+            if (level <= currentMaxLevel) return;
+            currentMaxLevel = level;
+
+            const banner = document.getElementById('alarm-banner');
+            const icon = document.getElementById('alarm-icon');
+            const status = document.getElementById('alarm-status');
+
+            banner.className = `alarm-banner level-${level}`;
+
+            const config = {
+                0: { icon: '🟢', text: 'All Clear — Monitoring' },
+                1: { icon: '🟡', text: 'Level 1 — Low Alert' },
+                2: { icon: '🟠', text: 'Level 2 — Medium Alert' },
+                3: { icon: '🔴', text: 'Level 3 — HIGH ALERT' },
+            };
+
+            const c = config[level] || config[0];
+            icon.textContent = c.icon;
+            status.textContent = c.text;
+        }
+
+        // ─── Clear Events ────────────────────────────────────────────
+        async function clearEvents() {
+            try {
+                await fetch('/events', { method: 'DELETE' });
+                document.getElementById('events-list').innerHTML = `
+                    <div class="empty-state" id="empty-state">
+                        <div class="icon">🎧</div>
+                        <div>Waiting for events...</div>
+                    </div>`;
+                stats = { total: 0, l1: 0, l2: 0, l3: 0 };
+                document.getElementById('stat-total').textContent = '0';
+                document.getElementById('stat-l1').textContent = '0';
+                document.getElementById('stat-l2').textContent = '0';
+                document.getElementById('stat-l3').textContent = '0';
+                currentMaxLevel = -1;
+                updateAlarmBanner(0);
+            } catch (e) {
+                console.error('Failed to clear events:', e);
+            }
+        }
+
+        // ─── Helpers ─────────────────────────────────────────────────
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
 </body>
+
 </html>
