@@ -34,5 +34,8 @@ project_plan_text.txt
 *.db
 *.sqlite3
 
+# Secrets
+config/notification_config.json
+
 # AI assistant
 .gemini/

@@ -305,17 +305,153 @@
             font-size: 32px;
             margin-bottom: 8px;
         }
+
+        /* ─── L3 Full-Screen Overlay ──────────────────── */
+        .l3-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(248, 81, 73, 0.15);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            animation: overlayPulse 2s ease-in-out infinite;
+        }
+
+        .l3-overlay.active {
+            display: flex;
+        }
+
+        @keyframes overlayPulse {
+
+            0%,
+            100% {
+                background: rgba(248, 81, 73, 0.12);
+            }
+
+            50% {
+                background: rgba(248, 81, 73, 0.25);
+            }
+        }
+
+        .l3-overlay-content {
+            background: #161b22;
+            border: 3px solid #f85149;
+            border-radius: 16px;
+            padding: 48px;
+            text-align: center;
+            max-width: 450px;
+            box-shadow: 0 0 60px rgba(248, 81, 73, 0.4);
+        }
+
+        .l3-overlay-content .siren {
+            font-size: 64px;
+            margin-bottom: 16px;
+        }
+
+        .l3-overlay-content h2 {
+            font-size: 28px;
+            color: #f85149;
+            margin-bottom: 8px;
+        }
+
+        .l3-overlay-content .detail {
+            color: #8b949e;
+            margin-bottom: 24px;
+            font-size: 16px;
+        }
+
+        .l3-dismiss-btn {
+            background: #f85149;
+            color: white;
+            border: none;
+            padding: 12px 32px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .l3-dismiss-btn:hover {
+            background: #da3633;
+        }
+
+        /* ─── Monitoring Toggle ───────────────────────── */
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .toggle-wrap {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #8b949e;
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 36px;
+            height: 20px;
+            background: #30363d;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .toggle-switch.active {
+            background: #3fb950;
+        }
+
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 16px;
+            height: 16px;
+            background: white;
+            border-radius: 50%;
+            transition: transform 0.3s;
+        }
+
+        .toggle-switch.active::after {
+            transform: translateX(16px);
+        }
     </style>
 </head>
 
 <body>
 
+    <!-- L3 Full-Screen Overlay -->
+    <div class="l3-overlay" id="l3-overlay">
+        <div class="l3-overlay-content">
+            <div class="siren">🚨</div>
+            <h2>LEVEL 3 — HIGH ALERT</h2>
+            <div class="detail" id="l3-detail">Threat detected</div>
+            <button class="l3-dismiss-btn" onclick="dismissOverlay()">Acknowledge & Dismiss</button>
+        </div>
+    </div>
+
     <!-- Header -->
     <div class="header">
         <h1><span>WATZS</span> Threat Detection</h1>
-        <div class="connection-badge">
-            <div class="connection-dot" id="connection-dot"></div>
-            <span id="connection-text">Connecting...</span>
+        <div class="header-controls">
+            <div class="toggle-wrap">
+                <span>Monitoring</span>
+                <div class="toggle-switch active" id="monitoring-toggle" onclick="toggleMonitoring()"></div>
+            </div>
+            <div class="connection-badge">
+                <div class="connection-dot" id="connection-dot"></div>
+                <span id="connection-text">Connecting...</span>
+            </div>
         </div>
     </div>
 
@@ -385,10 +521,20 @@
         });
 
         // ─── Listen for Live Alerts ──────────────────────────────────
+        let monitoringActive = true;
+
         socket.on('alert_event', (data) => {
+            if (!monitoringActive) return;
             addEventToLog(data);
             updateStats(data.level);
             updateAlarmBanner(data.level);
+
+            // Show L3 overlay on EVERY L3 alert
+            if (data.level === 3) {
+                document.getElementById('l3-detail').textContent =
+                    `${data.keyword || 'Unknown threat'} — ${data.type || 'alert'}`;
+                document.getElementById('l3-overlay').classList.add('active');
+            }
         });
 
         // ─── Load Existing Events on Connect ─────────────────────────
@@ -503,6 +649,7 @@
                 document.getElementById('stat-l3').textContent = '0';
                 currentMaxLevel = -1;
                 updateAlarmBanner(0);
+                dismissOverlay();
             } catch (e) {
                 console.error('Failed to clear events:', e);
             }
@@ -513,6 +660,18 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // ─── L3 Overlay Dismiss ──────────────────────────────────────
+        function dismissOverlay() {
+            document.getElementById('l3-overlay').classList.remove('active');
+        }
+
+        // ─── Monitoring Toggle ───────────────────────────────────────
+        function toggleMonitoring() {
+            monitoringActive = !monitoringActive;
+            const toggle = document.getElementById('monitoring-toggle');
+            toggle.classList.toggle('active', monitoringActive);
         }
     </script>
 </body>
