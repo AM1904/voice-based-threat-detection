@@ -1,1 +1,3 @@
-# Guru's module - to be implemented
+"""
+WATZS Server Package
+"""
