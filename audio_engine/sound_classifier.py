@@ -46,7 +46,7 @@ SOUND_ALERT_LEVELS = {
     "normal":         0,   # No alarm
 }
 
-DEFAULT_CONFIDENCE_THRESHOLD = 0.70
+DEFAULT_CONFIDENCE_THRESHOLD = 0.85  # Phase 4: raised from 0.70 to reduce false positives
 CONSECUTIVE_DETECTIONS_REQUIRED = 2  # Reduce false positives
 
 
