@@ -9,9 +9,10 @@ __pycache__/
 dist/
 build/
 
-# Models (large binary files — allow .h5 trained models)
+# Models (large binary files — allow .h5 trained models and whisper)
 models/*
 !models/*.h5
+!models/watzs-whisper/
 
 # STT training data & checkpoints
 stt_training/data/
