@@ -86,31 +86,31 @@ class ServerBridge:
             with self._lock:
                 if response.status_code == 201:
                     self._sent_count += 1
-                    print(f"[ServerBridge] ✅ Alert sent — "
+                    print(f"[ServerBridge] [OK] Alert sent - "
                           f"L{payload.get('level')} "
                           f"({payload.get('type')}: "
                           f"{payload.get('keyword', 'N/A')})")
                 else:
                     self._failed_count += 1
-                    print(f"[ServerBridge] ⚠️  Server returned "
+                    print(f"[ServerBridge] [!] Server returned "
                           f"{response.status_code}: {response.text[:100]}")
 
         except requests.ConnectionError:
             with self._lock:
                 self._failed_count += 1
-            print(f"[ServerBridge] ❌ Connection failed — "
+            print(f"[ServerBridge] [ERR] Connection failed - "
                   f"is the server running at {self.server_url}?")
 
         except requests.Timeout:
             with self._lock:
                 self._failed_count += 1
-            print(f"[ServerBridge] ❌ Request timed out "
+            print(f"[ServerBridge] [ERR] Request timed out "
                   f"(>{self.timeout}s)")
 
         except Exception as e:
             with self._lock:
                 self._failed_count += 1
-            print(f"[ServerBridge] ❌ Unexpected error: {e}")
+            print(f"[ServerBridge] [ERR] Unexpected error: {e}")
 
     def send_alert_sync(self, alert):
         """

@@ -425,6 +425,149 @@
         .toggle-switch.active::after {
             transform: translateX(16px);
         }
+
+        /* ─── Demo Mode Panel ────────────────────────────── */
+        .demo-panel {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .demo-panel-header {
+            padding: 14px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s;
+        }
+
+        .demo-panel-header:hover {
+            background: #1c2333;
+        }
+
+        .demo-panel.open .demo-panel-header {
+            border-bottom-color: #30363d;
+        }
+
+        .demo-panel-title {
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .demo-badge {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: #1f2d1f;
+            color: #3fb950;
+            border: 1px solid #3fb950;
+        }
+
+        .demo-chevron {
+            font-size: 12px;
+            color: #8b949e;
+            transition: transform 0.2s;
+        }
+
+        .demo-panel.open .demo-chevron {
+            transform: rotate(180deg);
+        }
+
+        .demo-panel-body {
+            display: none;
+            padding: 16px 20px;
+        }
+
+        .demo-panel.open .demo-panel-body {
+            display: block;
+        }
+
+        .demo-hint {
+            font-size: 12px;
+            color: #8b949e;
+            margin-bottom: 14px;
+        }
+
+        .demo-buttons {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+
+        .demo-btn {
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid #30363d;
+            background: #21262d;
+            color: #e1e4e8;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+            text-align: center;
+        }
+
+        .demo-btn:hover {
+            transform: translateY(-1px);
+        }
+
+        .demo-btn:active {
+            transform: translateY(0);
+        }
+
+        .demo-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .demo-btn.l1 {
+            border-color: #d29922;
+            color: #d29922;
+        }
+
+        .demo-btn.l1:hover:not(:disabled) {
+            background: #2a2410;
+            box-shadow: 0 2px 12px rgba(210, 153, 34, 0.15);
+        }
+
+        .demo-btn.l2 {
+            border-color: #db6d28;
+            color: #db6d28;
+        }
+
+        .demo-btn.l2:hover:not(:disabled) {
+            background: #2a1a10;
+            box-shadow: 0 2px 12px rgba(219, 109, 40, 0.15);
+        }
+
+        .demo-btn.l3 {
+            border-color: #f85149;
+            color: #f85149;
+        }
+
+        .demo-btn.l3:hover:not(:disabled) {
+            background: #2a1012;
+            box-shadow: 0 2px 12px rgba(248, 81, 73, 0.15);
+        }
+
+        .demo-btn-label {
+            font-size: 11px;
+            font-weight: 400;
+            color: #8b949e;
+            margin-top: 4px;
+        }
     </style>
 </head>
 
@@ -462,6 +605,36 @@
             <div class="alarm-icon" id="alarm-icon">🟢</div>
             <div class="alarm-label">Current Status</div>
             <div class="alarm-status" id="alarm-status">All Clear — Monitoring</div>
+        </div>
+
+        <!-- Demo Mode Panel -->
+        <div class="demo-panel" id="demo-panel">
+            <div class="demo-panel-header" onclick="toggleDemoPanel()">
+                <div class="demo-panel-title">
+                    Demo Mode <span class="demo-badge">Simulate</span>
+                </div>
+                <div class="demo-chevron">&#9660;</div>
+            </div>
+            <div class="demo-panel-body">
+                <div class="demo-hint">
+                    Simulate threat alerts without a microphone.
+                    Each button sends a fake alert through the full pipeline.
+                </div>
+                <div class="demo-buttons">
+                    <button class="demo-btn l1" onclick="demoTrigger(1, this)">
+                        L1 &mdash; Keyword
+                        <div class="demo-btn-label">"help" detected</div>
+                    </button>
+                    <button class="demo-btn l2" onclick="demoTrigger(2, this)">
+                        L2 &mdash; Sound
+                        <div class="demo-btn-label">Scream detected</div>
+                    </button>
+                    <button class="demo-btn l3" onclick="demoTrigger(3, this)">
+                        L3 &mdash; Voice Code
+                        <div class="demo-btn-label">"watzs emergency" x3</div>
+                    </button>
+                </div>
+            </div>
         </div>
 
         <!-- Stats Row -->
@@ -672,6 +845,35 @@
             monitoringActive = !monitoringActive;
             const toggle = document.getElementById('monitoring-toggle');
             toggle.classList.toggle('active', monitoringActive);
+        }
+
+        // ─── Demo Mode ──────────────────────────────────────────────
+        function toggleDemoPanel() {
+            document.getElementById('demo-panel').classList.toggle('open');
+        }
+
+        async function demoTrigger(level, btn) {
+            if (btn.disabled) return;
+            btn.disabled = true;
+            const origText = btn.innerHTML;
+            btn.innerHTML = 'Sending&hellip;';
+
+            try {
+                const resp = await fetch('/demo/trigger', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ level }),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    console.error('Demo trigger failed:', err);
+                }
+            } catch (e) {
+                console.error('Demo trigger error:', e);
+            } finally {
+                btn.innerHTML = origText;
+                btn.disabled = false;
+            }
         }
     </script>
 </body>

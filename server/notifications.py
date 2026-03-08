@@ -74,11 +74,11 @@ class EmailNotifier:
         # Check if fully configured
         if all([self.sender_email, self.sender_password, self.recipient_email]):
             self.enabled = True
-            print(f"[EmailNotifier] ✅ Configured — "
+            print(f"[EmailNotifier] OK - Configured -- "
                   f"sender: {self.sender_email}, "
                   f"recipient: {self.recipient_email}")
         else:
-            print("[EmailNotifier] ⚠️  Not configured — email notifications disabled.")
+            print("[EmailNotifier] WARNING - Not configured -- email notifications disabled.")
             print("  Set env vars: WATZS_EMAIL_SENDER, WATZS_EMAIL_PASSWORD, WATZS_EMAIL_RECIPIENT")
             print(f"  Or create: {CONFIG_PATH}")
 
@@ -187,18 +187,18 @@ class EmailNotifier:
 
             with self._lock:
                 self._sent_count += 1
-            print(f"[EmailNotifier] ✅ L3 email sent to {self.recipient_email}")
+            print(f"[EmailNotifier] OK - L3 email sent to {self.recipient_email}")
 
         except smtplib.SMTPAuthenticationError:
             with self._lock:
                 self._failed_count += 1
-            print("[EmailNotifier] ❌ Authentication failed!")
+            print("[EmailNotifier] ERROR - Authentication failed!")
             print("  Check your Gmail App Password.")
 
         except Exception as e:
             with self._lock:
                 self._failed_count += 1
-            print(f"[EmailNotifier] ❌ Failed to send email: {e}")
+            print(f"[EmailNotifier] ERROR - Failed to send email: {e}")
 
     def update_config(self, sender_email=None, sender_password=None, recipient_email=None):
         """Update email configuration at runtime."""
