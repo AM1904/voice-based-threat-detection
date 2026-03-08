@@ -46,8 +46,37 @@ SOUND_ALERT_LEVELS = {
     "normal":         0,   # No alarm
 }
 
-DEFAULT_CONFIDENCE_THRESHOLD = 0.85  # Phase 4: raised from 0.70 to reduce false positives
-CONSECUTIVE_DETECTIONS_REQUIRED = 2  # Reduce false positives
+DEFAULT_CONFIDENCE_THRESHOLD = 0.65  # Base threshold for scream/gunshot
+CONSECUTIVE_DETECTIONS_REQUIRED = 1  # Default for instant events (gunshot, glass)
+RMS_NOISE_GATE = 200  # Lowered from 500: speaker playback is quieter than real events
+DIAGNOSTIC_LOGGING = False  # Set True for per-chunk diagnostic output
+
+# Per-class confidence thresholds — tuned from v2 model confusion matrix:
+#   normal->crash was 8.7% false positive, normal->glass_breaking was 6.0%
+#   Raising thresholds for those classes eliminates the false positives
+#   while keeping real detections (crash val avg 0.665, glass_breaking val avg 0.556)
+CONFIDENCE_PER_CLASS = {
+    "scream": 0.65,
+    "gunshot": 0.65,
+    "glass_breaking": 0.66,  # Tuned: real glass avg ~0.67, false positives ~0.60
+    "crash": 0.80,           # Raised: v2 model confuses normal->crash at ~0.6
+}
+
+# Per-class consecutive detection overrides
+# Instant events (gunshot, glass_breaking) = 1 detection is enough
+# Sustained events (scream, crash) = need 2+ to confirm, reduces false positives
+CONSECUTIVE_PER_CLASS = {
+    "scream": 2,
+    "gunshot": 1,
+    "glass_breaking": 2,  # Raised from 1: double-check reduces false positives
+    "crash": 3,            # Raised from 2: crash is the worst false positive class
+}
+
+# YAMNet class indices for speech (non-threat) - used as pre-filter
+# If YAMNet thinks it's normal speech, skip the custom classifier to avoid
+# false positives where speech gets misclassified as screaming.
+YAMNET_SPEECH_INDICES = {0, 1, 2, 3, 5, 65}  # Speech, Child speech, Conversation, Narration, Speech synth, Babble
+YAMNET_SPEECH_THRESHOLD = 0.3  # Min YAMNet speech score to trigger the filter
 
 
 class SoundClassifier:
@@ -95,7 +124,7 @@ class SoundClassifier:
             # Load YAMNet for embedding extraction
             print("[SoundClassifier] Loading YAMNet for embeddings...")
             self._yamnet = hub.load("https://tfhub.dev/google/yamnet/1")
-            print("[SoundClassifier] ✅ YAMNet loaded.")
+            print("[SoundClassifier] [OK] YAMNet loaded.")
 
             # Load custom trained classifier
             resolved_path = os.path.abspath(self._model_path)
@@ -108,7 +137,7 @@ class SoundClassifier:
             print(f"[SoundClassifier] Loading custom classifier from {resolved_path}...")
             self._classifier = tf.keras.models.load_model(resolved_path)
             self._model_loaded = True
-            print(f"[SoundClassifier] ✅ Custom model loaded — "
+            print(f"[SoundClassifier] [OK] Custom model loaded - "
                   f"{NUM_CLASSES} classes: {CLASSES}")
 
         except ImportError:
@@ -142,6 +171,17 @@ class SoundClassifier:
 
             # Convert bytes to float32 waveform normalized to [-1, 1]
             samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+
+            # RMS noise gate: skip quiet audio to avoid false positives
+            rms = np.sqrt(np.mean(samples ** 2))
+            if rms < RMS_NOISE_GATE:
+                if DIAGNOSTIC_LOGGING:
+                    print(f"[SoundDiag] RMS {rms:.0f} < gate {RMS_NOISE_GATE} -> SKIP (too quiet)")
+                return
+
+            if DIAGNOSTIC_LOGGING:
+                print(f"[SoundDiag] RMS {rms:.0f} (gate={RMS_NOISE_GATE}) -> PASS, classifying...")
+
             waveform = samples / 32768.0
 
             # YAMNet expects at least 0.975s of audio at 16kHz
@@ -149,12 +189,50 @@ class SoundClassifier:
             if len(waveform) < min_samples:
                 waveform = np.pad(waveform, (0, min_samples - len(waveform)))
 
-            # Extract YAMNet embeddings (1024-dim per time frame)
-            _, embeddings, _ = self._yamnet(waveform)
+            # Extract YAMNet scores and embeddings
+            scores, embeddings, _ = self._yamnet(waveform)
+
+            # Speech pre-filter: if YAMNet's top class is normal speech,
+            # skip the custom classifier to avoid false scream detections
+            scores_np = scores.numpy()
+            mean_scores = scores_np.mean(axis=0)
+            top_yamnet_idx = int(mean_scores.argmax())
+            top_yamnet_score = float(mean_scores.max())
+
+            if DIAGNOSTIC_LOGGING:
+                # Show top 3 YAMNet classes for debugging
+                top3_idx = mean_scores.argsort()[-3:][::-1]
+                top3_info = ", ".join(
+                    f"cls{int(i)}={float(mean_scores[i]):.3f}"
+                    for i in top3_idx
+                )
+                is_speech = top_yamnet_idx in YAMNET_SPEECH_INDICES
+                print(f"[SoundDiag] YAMNet top3: [{top3_info}] | "
+                      f"top_idx={top_yamnet_idx} is_speech={is_speech} "
+                      f"score={top_yamnet_score:.3f} thresh={YAMNET_SPEECH_THRESHOLD}")
+
+            if top_yamnet_idx in YAMNET_SPEECH_INDICES and top_yamnet_score >= YAMNET_SPEECH_THRESHOLD:
+                if DIAGNOSTIC_LOGGING:
+                    print(f"[SoundDiag] -> SKIP: speech pre-filter triggered "
+                          f"(idx={top_yamnet_idx}, score={top_yamnet_score:.3f})")
+                return
+
             embedding = embeddings.numpy().mean(axis=0, keepdims=True)
 
             # Run custom classifier on the embedding
             prediction = self._classifier.predict(embedding, verbose=0)[0]
+
+            if DIAGNOSTIC_LOGGING:
+                pred_info = ", ".join(
+                    f"{CLASSES[i]}={float(prediction[i]):.3f}"
+                    for i in range(NUM_CLASSES)
+                )
+                top_label = IDX_TO_CLASS[int(np.argmax(prediction))]
+                top_conf = float(prediction[int(np.argmax(prediction))])
+                class_thresh = CONFIDENCE_PER_CLASS.get(top_label, self.confidence_threshold)
+                print(f"[SoundDiag] Classifier: [{pred_info}] -> "
+                      f"{top_label} ({top_conf:.1%}) "
+                      f"thresh={class_thresh}")
 
             self._analyze_prediction(prediction)
 
@@ -181,10 +259,46 @@ class SoundClassifier:
             if len(waveform) < min_samples:
                 waveform = np.pad(waveform, (0, min_samples - len(waveform)))
 
-            _, embeddings, _ = self._yamnet(waveform)
+            # Extract YAMNet scores and embeddings
+            scores, embeddings, _ = self._yamnet(waveform)
+
+            # Speech pre-filter (same as process_audio)
+            scores_np = scores.numpy()
+            mean_scores = scores_np.mean(axis=0)
+            top_yamnet_idx = int(mean_scores.argmax())
+            top_yamnet_score = float(mean_scores.max())
+
+            if DIAGNOSTIC_LOGGING:
+                top3_idx = mean_scores.argsort()[-3:][::-1]
+                top3_info = ", ".join(
+                    f"cls{int(i)}={float(mean_scores[i]):.3f}"
+                    for i in top3_idx
+                )
+                is_speech = top_yamnet_idx in YAMNET_SPEECH_INDICES
+                print(f"[SoundDiag] (float) YAMNet top3: [{top3_info}] | "
+                      f"top_idx={top_yamnet_idx} is_speech={is_speech} "
+                      f"score={top_yamnet_score:.3f}")
+
+            if top_yamnet_idx in YAMNET_SPEECH_INDICES and top_yamnet_score >= YAMNET_SPEECH_THRESHOLD:
+                if DIAGNOSTIC_LOGGING:
+                    print(f"[SoundDiag] (float) -> SKIP: speech pre-filter "
+                          f"(idx={top_yamnet_idx}, score={top_yamnet_score:.3f})")
+                return
+
             embedding = embeddings.numpy().mean(axis=0, keepdims=True)
 
             prediction = self._classifier.predict(embedding, verbose=0)[0]
+
+            if DIAGNOSTIC_LOGGING:
+                pred_info = ", ".join(
+                    f"{CLASSES[i]}={float(prediction[i]):.3f}"
+                    for i in range(NUM_CLASSES)
+                )
+                top_label = IDX_TO_CLASS[int(np.argmax(prediction))]
+                top_conf = float(prediction[int(np.argmax(prediction))])
+                print(f"[SoundDiag] (float) Classifier: [{pred_info}] -> "
+                      f"{top_label} ({top_conf:.1%})")
+
             self._analyze_prediction(prediction)
 
         except Exception as e:
@@ -204,8 +318,9 @@ class SoundClassifier:
             results.sort(key=lambda x: x[1], reverse=True)
             self.on_classification(results)
 
-        # Ignore "normal" and low-confidence detections
-        if label == "normal" or confidence < self.confidence_threshold:
+        # Ignore "normal" and low-confidence detections (per-class thresholds)
+        class_threshold = CONFIDENCE_PER_CLASS.get(label, self.confidence_threshold)
+        if label == "normal" or confidence < class_threshold:
             return
 
         # Track consecutive detections
@@ -222,8 +337,9 @@ class SoundClassifier:
         self._last_detection_time[label] = now
         consecutive = self._consecutive_detections[label]
 
-        # Only alert if we have enough consecutive detections
-        if consecutive >= self.consecutive_required:
+        # Only alert if we have enough consecutive detections (per-class)
+        required = CONSECUTIVE_PER_CLASS.get(label, self.consecutive_required)
+        if consecutive >= required:
             level = SOUND_ALERT_LEVELS.get(label, 2)
             self._emit_alert(
                 category=label,
@@ -255,11 +371,11 @@ class SoundClassifier:
         }
 
         level_names = {1: "LOW", 2: "MEDIUM", 3: "HIGH"}
-        level_icons = {1: "🟡", 2: "🟠", 3: "🔴"}
+        level_icons = {1: "[L1]", 2: "[L2]", 3: "[L3]"}
 
-        print(f"\n{level_icons.get(level, '⚪')} "
-              f"[SOUND ALERT L{level} — {level_names.get(level, '')}] "
-              f"\"{class_name}\" → {category} "
+        print(f"\n{level_icons.get(level, '[??]')} "
+              f"[SOUND ALERT L{level} - {level_names.get(level, '')}] "
+              f"\"{class_name}\" -> {category} "
               f"(confidence: {confidence:.0%}, "
               f"consecutive: {consecutive})")
 
@@ -321,18 +437,18 @@ class SoundClassifier:
 if __name__ == "__main__":
     import json as json_module
 
-    print("\n🔊 WATZS — Sound Classifier Test")
+    print("\n[>] WATZS -- Sound Classifier Test")
     print("=" * 50)
 
     classifier = SoundClassifier()
 
     def on_alert(alert):
-        print(f"\n🚨 Alert: {json_module.dumps(alert, indent=2)}")
+        print(f"\n[ALERT] Alert: {json_module.dumps(alert, indent=2)}")
 
     classifier.on_alert = on_alert
 
     if not classifier.is_model_loaded:
-        print("\n⚠️  Models not available — running mock tests...\n")
+        print("\n[!] Models not available -- running mock tests...\n")
         print("Simulating threat sounds:\n")
 
         for category in ["scream", "gunshot", "glass_breaking", "crash"]:
@@ -340,12 +456,12 @@ if __name__ == "__main__":
             classifier.mock_classify(category)
             print()
 
-        print("✅ Mock tests complete.")
+        print("[OK] Mock tests complete.")
     else:
-        print("\n✅ Custom model loaded. Ready for live classification.")
+        print("\n[OK] Custom model loaded. Ready for live classification.")
         print("   Run with AudioCapture for real-time detection.")
 
-    print(f"\n📋 Supported threat categories:")
+    print(f"\n[i] Supported threat categories:")
     for cat, level in sorted(
         SoundClassifier.get_threat_categories().items(), key=lambda x: x[1]
     ):

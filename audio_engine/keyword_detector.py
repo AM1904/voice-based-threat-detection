@@ -31,11 +31,14 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 
-# ─── Default Configuration ──────────────────────────────────────────────
+# --- Default Configuration ---
 DEFAULT_KEYWORDS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "config", "keywords.json"
 )
+# HuggingFace Hub model ID for the fine-tuned WATZS Whisper model
+HUGGINGFACE_MODEL_ID = "Ananya4/watzs-whisper"
+# Local fallback path (if model is stored locally)
 DEFAULT_FINETUNED_MODEL_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "models", "watzs-whisper"
@@ -43,57 +46,100 @@ DEFAULT_FINETUNED_MODEL_PATH = os.path.join(
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2  # 16-bit = 2 bytes
 RECOGNITION_CHUNK_SECONDS = 2
-SILENCE_THRESHOLD = 300
+SILENCE_THRESHOLD = 1000  # RMS gate: ignore ambient noise, only process actual speech
+DIAGNOSTIC_LOGGING = False  # Set True for per-chunk diagnostic output
 
 
-def _load_whisper_pipeline(model_path=None, model_size="small", language="en"):
+def _load_whisper_model(model_path=None, model_size="small", language="en"):
     """
-    Load a Whisper pipeline using HuggingFace Transformers.
+    Load Whisper model and processor directly (NOT via pipeline - it hangs on CPU).
 
     Priority:
-      1. Fine-tuned model at model_path (if exists)
-      2. Stock Whisper model of given size
+      1. Stock Whisper (accurate general transcription for keyword matching)
+      2. Local fine-tuned model at model_path (if exists)
+      3. HuggingFace Hub: Ananya4/watzs-whisper (fine-tuned, but hallucinates)
+
+    Note: The fine-tuned model (Ananya4/watzs-whisper) is heavily biased and
+    hallucinates "fire extinguisher" for nearly all input. Stock Whisper provides
+    far more accurate transcription for keyword matching.
 
     Returns:
-        transformers.Pipeline for automatic-speech-recognition
+        tuple: (model, processor, device, source_label)
     """
+    import warnings
+    warnings.filterwarnings("ignore", message=".*logits_processor.*")
+
     try:
-        from transformers import pipeline
+        from transformers import WhisperForConditionalGeneration, WhisperProcessor
         import torch
+        import logging
+        # Suppress verbose transformers warnings about logits processors
+        logging.getLogger("transformers.generation.utils").setLevel(logging.ERROR)
     except ImportError:
         raise ImportError(
             "HuggingFace Transformers is required. "
             "Install with: pip install transformers torch"
         )
 
-    # Determine which model to load
-    finetuned_path = Path(model_path) if model_path else Path(DEFAULT_FINETUNED_MODEL_PATH)
-
-    if finetuned_path.exists() and (finetuned_path / "config.json").exists():
-        model_id = str(finetuned_path)
-        source_label = f"fine-tuned ({finetuned_path.name})"
-    else:
-        model_id = f"openai/whisper-{model_size}"
-        source_label = f"stock (whisper-{model_size})"
-
     # Auto-detect device
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-    print(f"[KeywordDetector] Loading Whisper — {source_label}")
+    model = None
+    processor = None
+    source_label = None
+
+    # Priority 1: Stock Whisper — accurate general-purpose transcription
+    model_id = f"openai/whisper-{model_size}"
+    try:
+        print(f"[KeywordDetector] Loading stock Whisper: {model_id}")
+        processor = WhisperProcessor.from_pretrained(model_id)
+        model = WhisperForConditionalGeneration.from_pretrained(
+            model_id,
+            torch_dtype=torch_dtype,
+        )
+        source_label = f"stock (whisper-{model_size})"
+    except Exception as e:
+        print(f"[KeywordDetector] Stock Whisper failed: {e}")
+
+        # Priority 2: Try local fine-tuned model
+        finetuned_path = Path(model_path) if model_path else Path(DEFAULT_FINETUNED_MODEL_PATH)
+        if finetuned_path.exists() and (finetuned_path / "config.json").exists():
+            try:
+                print(f"[KeywordDetector] Trying local model: {finetuned_path}")
+                processor = WhisperProcessor.from_pretrained(str(finetuned_path))
+                model = WhisperForConditionalGeneration.from_pretrained(
+                    str(finetuned_path),
+                    torch_dtype=torch_dtype,
+                )
+                source_label = f"fine-tuned (local: {finetuned_path.name})"
+            except Exception as e2:
+                print(f"[KeywordDetector] Local model failed: {e2}")
+
+        # Priority 3: Try HuggingFace Hub model (last resort)
+        if model is None:
+            try:
+                print(f"[KeywordDetector] Trying HuggingFace Hub: {HUGGINGFACE_MODEL_ID}")
+                processor = WhisperProcessor.from_pretrained(HUGGINGFACE_MODEL_ID)
+                model = WhisperForConditionalGeneration.from_pretrained(
+                    HUGGINGFACE_MODEL_ID,
+                    torch_dtype=torch_dtype,
+                )
+                source_label = f"fine-tuned (HF: {HUGGINGFACE_MODEL_ID})"
+            except Exception as e3:
+                raise RuntimeError(
+                    f"Failed to load any Whisper model. "
+                    f"Stock: {e}, HF Hub: {e3}"
+                )
+
+    # Move model to device and set eval mode
+    model = model.to(device)
+    model.eval()
+
+    print(f"[KeywordDetector] Loaded Whisper - {source_label}")
     print(f"[KeywordDetector] Device: {device}")
 
-    pipe = pipeline(
-        "automatic-speech-recognition",
-        model=model_id,
-        device=device,
-        torch_dtype=torch_dtype,
-        chunk_length_s=30,
-        return_timestamps=False,
-    )
-
-    print(f"[KeywordDetector] Whisper loaded successfully.")
-    return pipe, source_label
+    return model, processor, device, source_label
 
 
 class KeywordDetector:
@@ -129,8 +175,8 @@ class KeywordDetector:
         self.on_alert = None
         self.on_transcription = None
 
-        # Load Whisper model via HuggingFace Transformers
-        self._stt_pipeline, self._model_source = _load_whisper_pipeline(
+        # Load Whisper model directly (not pipeline - it hangs on CPU)
+        self._whisper_model, self._whisper_processor, self._device, self._model_source = _load_whisper_model(
             model_path=model_path,
             model_size=model_size,
             language=language,
@@ -207,6 +253,9 @@ class KeywordDetector:
             rms = float(np.sqrt(np.mean(samples ** 2)))
 
             if rms > SILENCE_THRESHOLD:
+                if DIAGNOSTIC_LOGGING:
+                    print(f"[KeywordDiag] RMS {rms:.0f} > gate {SILENCE_THRESHOLD} "
+                          f"-> sending {len(self._audio_buffer)} bytes to Whisper")
                 audio_data = bytes(self._audio_buffer)
                 thread = threading.Thread(
                     target=self._recognize_audio,
@@ -214,29 +263,59 @@ class KeywordDetector:
                     daemon=True
                 )
                 thread.start()
+            else:
+                if DIAGNOSTIC_LOGGING:
+                    print(f"[KeywordDiag] RMS {rms:.0f} <= gate {SILENCE_THRESHOLD} -> SKIP (silence)")
 
             self._audio_buffer = bytearray()
             self._buffer_frames = 0
 
     def _recognize_audio(self, audio_bytes):
-        """Transcribe audio using Whisper via HuggingFace Transformers pipeline."""
+        """Transcribe audio using Whisper via direct model inference (not pipeline)."""
+        import torch
+
         with self._processing_lock:
             try:
                 # Convert bytes to float32 audio array
                 samples = np.frombuffer(audio_bytes, dtype=np.int16)
                 audio_float = samples.astype(np.float32) / 32768.0
 
-                # Run Whisper inference
-                result = self._stt_pipeline(
+                # Process audio through Whisper processor
+                inputs = self._whisper_processor(
                     audio_float,
-                    generate_kwargs={
-                        "language": self.language,
-                    },
+                    sampling_rate=self.sample_rate,
+                    return_tensors="pt",
+                    return_attention_mask=True,
                 )
+                input_features = inputs.input_features
+                attention_mask = inputs.attention_mask
 
-                text = result.get("text", "").strip()
+                # Move to device and match dtype
+                input_features = input_features.to(self._device)
+                attention_mask = attention_mask.to(self._device)
+                if self._device != "cpu":
+                    input_features = input_features.half()
+
+                # Generate transcription
+                with torch.no_grad():
+                    predicted_ids = self._whisper_model.generate(
+                        input_features,
+                        attention_mask=attention_mask,
+                        language=self.language,
+                    )
+
+                # Decode
+                text = self._whisper_processor.batch_decode(
+                    predicted_ids, skip_special_tokens=True
+                )[0].strip()
+
                 if text:
+                    if DIAGNOSTIC_LOGGING:
+                        print(f"[KeywordDiag] Whisper transcribed: \"{text}\"")
                     self._handle_transcription(text, is_final=True)
+                else:
+                    if DIAGNOSTIC_LOGGING:
+                        print(f"[KeywordDiag] Whisper returned empty transcription")
 
             except Exception as e:
                 print(f"[KeywordDetector] Whisper error: {e}")
@@ -311,10 +390,10 @@ class KeywordDetector:
         }
 
         level_names = {1: "LOW", 2: "MEDIUM", 3: "HIGH"}
-        level_icons = {1: "🟡", 2: "🟠", 3: "🔴"}
+        level_icons = {1: "[L1]", 2: "[L2]", 3: "[L3]"}
 
-        print(f"\n{level_icons.get(level, '⚪')} "
-              f"[ALERT L{level} — {level_names.get(level, 'UNKNOWN')}] "
+        print(f"\n{level_icons.get(level, '[??]')} "
+              f"[ALERT L{level} - {level_names.get(level, 'UNKNOWN')}] "
               f"Type: {alert_type} | "
               f"Keyword: \"{keyword}\" | "
               f"Confidence: {confidence:.0%}")
@@ -351,12 +430,12 @@ if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from audio_engine.capture import AudioCapture
 
-    print("\n🔍 WATZS — Live Keyword Detection (Whisper)")
+    print("\n[>] WATZS -- Live Keyword Detection (Whisper)")
     print("=" * 50)
 
     detector = KeywordDetector()
 
-    print("\n📋 Loaded keywords:")
+    print("\n[i] Loaded keywords:")
     for level_key in ["L1", "L2", "L3"]:
         level_data = detector.keywords_config["levels"].get(level_key, {})
         keywords = level_data.get("keywords", [])
@@ -364,7 +443,7 @@ if __name__ == "__main__":
     print()
 
     def show_transcription(text, is_final):
-        prefix = "📝" if is_final else "💬"
+        prefix = "[FINAL]" if is_final else "[...]"
         print(f"{prefix} \"{text}\"")
 
     detector.on_transcription = show_transcription
@@ -373,12 +452,12 @@ if __name__ == "__main__":
     capture.add_listener(detector.process_audio)
 
     def signal_handler(sig, frame):
-        print("\n\n⏹️  Stopping...")
+        print("\n\n[STOP] Stopping...")
         capture.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
 
-    print("🎤 Listening... Speak threat keywords to test detection.")
+    print("[MIC] Listening... Speak threat keywords to test detection.")
     print("   Press Ctrl+C to stop.\n")
     capture.start(blocking=True)

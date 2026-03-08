@@ -145,7 +145,7 @@ class AlarmClassifier:
                 }
             }
 
-            print(f"\n🔴🔴🔴 [ESCALATION → L3] "
+            print(f"\n[!!!] [ESCALATION -> L3] "
                   f"L1 + L2 detected within {self.escalation_window}s!")
 
             self._emit(escalation)
@@ -176,7 +176,7 @@ class AlarmClassifier:
 
 # ─── CLI Entry Point ───────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("\n⚠️  WATZS — Alarm Classifier Test")
+    print("\n[!] WATZS -- Alarm Classifier Test")
     print("=" * 50)
 
     classifier = AlarmClassifier()
@@ -184,8 +184,8 @@ if __name__ == "__main__":
 
     def on_alert(alert):
         fired_alerts.append(alert)
-        level_icons = {1: "🟡", 2: "🟠", 3: "🔴"}
-        icon = level_icons.get(alert["level"], "⚪")
+        level_icons = {1: "[L1]", 2: "[L2]", 3: "[L3]"}
+        icon = level_icons.get(alert["level"], "[??]")
         print(f"  {icon} Alert L{alert['level']}: "
               f"type={alert['type']}, keyword={alert.get('keyword')}")
 
@@ -213,6 +213,6 @@ if __name__ == "__main__":
         "source": "watzs_custom",
     })
 
-    print(f"\n📋 Total alerts emitted: {len(fired_alerts)}")
+    print(f"\n[i] Total alerts emitted: {len(fired_alerts)}")
     print(f"   L3 escalations: {sum(1 for a in fired_alerts if a['level'] == 3)}")
-    print(f"\n✅ Test complete.")
+    print(f"\n[OK] Test complete.")
