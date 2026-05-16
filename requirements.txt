@@ -29,3 +29,4 @@ python-socketio>=5.10.0
 
 # Integration (Phase 3)
 requests>=2.31.0
+twilio>=8.0.0

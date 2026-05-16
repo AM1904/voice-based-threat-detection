@@ -17,7 +17,7 @@ Usage:
     capture.start()
 """
 
-import pyaudio
+import sounddevice as sd
 import numpy as np
 import threading
 import time
@@ -28,7 +28,6 @@ import os
 # ─── Audio Configuration ───────────────────────────────────────────────
 RATE = 16000           # 16kHz — required by Vosk
 CHANNELS = 1           # Mono
-FORMAT = pyaudio.paInt16
 CHUNK = 4000           # ~250ms of audio per chunk at 16kHz
 DEVICE_INDEX = None    # None = default mic
 
@@ -42,7 +41,7 @@ class AudioCapture:
         rate (int): Sample rate in Hz (default 16000 for Vosk)
         channels (int): Number of audio channels (1 = mono)
         chunk (int): Number of frames per buffer
-        device_index (int|None): PyAudio device index, None for default
+        device_index (int|None): sounddevice device index, None for default
     """
 
     def __init__(self, rate=RATE, channels=CHANNELS, chunk=CHUNK,
@@ -52,7 +51,6 @@ class AudioCapture:
         self.chunk = chunk
         self.device_index = device_index
 
-        self._pyaudio = None
         self._stream = None
         self._running = False
         self._thread = None
@@ -85,35 +83,29 @@ class AudioCapture:
     # ─── Device Info ────────────────────────────────────────────────
     def list_devices(self):
         """List all available audio input devices."""
-        pa = pyaudio.PyAudio()
         devices = []
-        for i in range(pa.get_device_count()):
-            info = pa.get_device_info_by_index(i)
-            if info["maxInputChannels"] > 0:
+        for i, info in enumerate(sd.query_devices()):
+            if info["max_input_channels"] > 0:
                 devices.append({
                     "index": i,
                     "name": info["name"],
-                    "channels": info["maxInputChannels"],
-                    "sample_rate": int(info["defaultSampleRate"])
+                    "channels": info["max_input_channels"],
+                    "sample_rate": int(info["default_samplerate"])
                 })
-        pa.terminate()
         return devices
 
     def get_default_device(self):
         """Get info about the default input device."""
-        pa = pyaudio.PyAudio()
         try:
-            info = pa.get_default_input_device_info()
+            info = sd.query_devices(kind='input')
             return {
                 "index": info["index"],
                 "name": info["name"],
-                "channels": info["maxInputChannels"],
-                "sample_rate": int(info["defaultSampleRate"])
+                "channels": info["max_input_channels"],
+                "sample_rate": int(info["default_samplerate"])
             }
-        except IOError:
+        except Exception:
             return None
-        finally:
-            pa.terminate()
 
     # ─── Stream Control ─────────────────────────────────────────────
     def start(self, blocking=True):
@@ -128,34 +120,37 @@ class AudioCapture:
             print("[AudioCapture] Already running.")
             return
 
-        self._pyaudio = pyaudio.PyAudio()
-
         # Verify a mic is available
         try:
             if self.device_index is not None:
-                self._pyaudio.get_device_info_by_index(self.device_index)
+                sd.query_devices(self.device_index, kind='input')
             else:
-                self._pyaudio.get_default_input_device_info()
-        except IOError:
+                sd.query_devices(kind='input')
+        except Exception:
             print("[AudioCapture] ERROR: No microphone found!")
-            self._pyaudio.terminate()
-            self._pyaudio = None
             return False
+
+        # Define the callback for sounddevice
+        def sd_callback(indata, frames, time_info, status):
+            if status:
+                print(f"[AudioCapture] Stream status: {status}")
+            # Convert to int16 bytes to maintain compatibility with existing listeners
+            data = (indata * 32767).astype(np.int16).tobytes()
+            self._notify_listeners(data, frames)
 
         # Open the audio stream
         try:
-            self._stream = self._pyaudio.open(
-                format=FORMAT,
+            self._stream = sd.InputStream(
+                samplerate=self.rate,
                 channels=self.channels,
-                rate=self.rate,
-                input=True,
-                input_device_index=self.device_index,
-                frames_per_buffer=self.chunk
+                dtype='float32',
+                device=self.device_index,
+                blocksize=self.chunk,
+                callback=sd_callback
             )
+            self._stream.start()
         except Exception as e:
             print(f"[AudioCapture] ERROR opening stream: {e}")
-            self._pyaudio.terminate()
-            self._pyaudio = None
             return False
 
         self._running = True
@@ -163,34 +158,28 @@ class AudioCapture:
               f"chunk={self.chunk}, channels={self.channels}")
 
         if blocking:
-            self._capture_loop()
-        else:
-            self._thread = threading.Thread(target=self._capture_loop,
-                                            daemon=True)
-            self._thread.start()
-
+            try:
+                while self._running:
+                    time.sleep(0.1)
+            except KeyboardInterrupt:
+                self.stop()
+        
         return True
 
     def stop(self):
         """Stop capturing audio and release resources."""
         self._running = False
 
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
-
         if self._stream:
             try:
-                self._stream.stop_stream()
+                self._stream.stop()
                 self._stream.close()
             except Exception:
                 pass
             self._stream = None
 
-        if self._pyaudio:
-            self._pyaudio.terminate()
-            self._pyaudio = None
-
         print("[AudioCapture] Stopped.")
+
 
     def _capture_loop(self):
         """Main capture loop — reads audio chunks and dispatches."""

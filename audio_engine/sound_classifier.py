@@ -140,15 +140,9 @@ class SoundClassifier:
             print(f"[SoundClassifier] [OK] Custom model loaded - "
                   f"{NUM_CLASSES} classes: {CLASSES}")
 
-        except ImportError:
-            print("[SoundClassifier] WARNING: TensorFlow not installed!")
-            print("  Install with: pip install tensorflow tensorflow-hub")
-            print("  Running in MOCK mode — will not classify real audio.")
-            self._model_loaded = False
-
-        except Exception as e:
-            print(f"[SoundClassifier] WARNING: Failed to load models: {e}")
-            print("  Running in MOCK mode.")
+        except (ImportError, RuntimeError, Exception) as e:
+            print(f"[SoundClassifier] WARNING: TensorFlow not available or failed to load: {e}")
+            print("  Sound classification will be disabled (MOCK mode).")
             self._model_loaded = False
 
     # ─── Audio Processing ───────────────────────────────────────────
@@ -168,6 +162,7 @@ class SoundClassifier:
 
         try:
             import tensorflow as tf
+            # ... rest of the method (rest of the code is unchanged because the try/except block is already here)
 
             # Convert bytes to float32 waveform normalized to [-1, 1]
             samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
